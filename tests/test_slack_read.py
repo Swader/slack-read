@@ -359,28 +359,50 @@ class TestPromptHookAndPiExtension(unittest.TestCase):
         if not shutil.which("node"):
             self.skipTest("node not installed")
         ext_path = (REPO_ROOT / "extensions" / "slack-read.js").as_uri()
-        js = (
-            f"const mod = await import({json.dumps(ext_path)});\n"
-            "let handler = null;\n"
-            "mod.default({ on(ev, fn) { if (ev === 'before_agent_start') handler = fn; } });\n"
-            "const res = await handler({ messageType: 'user', prompt: 'See https://example.slack.com/archives/C0123456789/p1700000000123456.' });\n"
-            "const none = await handler({ messageType: 'user', prompt: 'No links here' });\n"
-            "console.log(JSON.stringify({ res, noneIsUndefined: none === undefined }));\n"
-        )
+        js = f"const mod = await import({json.dumps(ext_path)});\n" + """
+            import assert from 'node:assert/strict';
+            const events = new Map();
+            mod.default({ on: (event, handler) => events.set(event, handler) });
+            const request = (...messages) => events.get('context_with_system')({ messages });
+            const user = content => ({ role: 'user', content });
+            const system = { role: 'system', content: 'Keep this prompt' };
+            const done = { role: 'assistant', stopReason: 'stop' };
+            const toolUse = { role: 'assistant', stopReason: 'toolUse' };
+            const link = 'https://example.slack.com/archives/C0123456789/p1700000000123456';
+            const secondLink = 'https://app.slack.com/client/T0123456789/C0123456789';
+            const original = user(`See ${link}.`);
+            const hint = url => `Run: slack-read '${url}'`;
+            const normal = request(system, original).messages;
+            assert.equal(normal[0], system);
+            assert.ok(normal[1].content.at(-1).text.includes(hint(link)));
+            assert.equal(original.content, `See ${link}.`);
+
+            const toolResult = { role: 'toolResult', content: secondLink };
+            const steering = user([{ type: 'text', text: secondLink }, { type: 'image', data: '' }]);
+            const steered = request(system, original, toolUse, toolResult, steering).messages;
+            assert.ok(steered[1].content.at(-1).text.includes(hint(link)));
+            assert.equal(steered[3], toolResult);
+            assert.deepEqual(steered[4].content.slice(0, -1), steering.content);
+            assert.ok(steered[4].content.at(-1).text.includes(hint(secondLink)));
+            assert.equal(steering.content.length, 2);
+
+            const followUp = request(system, original, done, steering, original).messages;
+            assert.equal(followUp[1], original);
+            assert.ok(followUp[3].content.at(-1).text.includes(hint(secondLink)));
+            assert.ok(followUp[4].content.at(-1).text.includes(hint(link)));
+            assert.equal(request(system, original, done, user('No links here')), undefined);
+            assert.equal(request(system, { ...original, testyContextLabel: 'Earlier progress summary' }, toolResult), undefined);
+
+            const failed = { role: 'assistant', stopReason: 'error' };
+            assert.ok(request(system, original, failed).messages[1].content.at(-1).text.includes(hint(link)));
+            assert.equal(request(system, original, failed, user('No links here')), undefined);
+        """
         proc = subprocess.run(
             ["node", "--input-type=module", "-e", js],
             text=True,
             capture_output=True,
-            check=True,
         )
-        data = json.loads(proc.stdout)
-        self.assertTrue(data["noneIsUndefined"])
-        self.assertEqual(data["res"]["message"]["customType"], "slack-read-hint")
-        self.assertFalse(data["res"]["message"]["display"])
-        self.assertEqual(
-            data["res"]["message"]["details"]["urls"],
-            ["https://example.slack.com/archives/C0123456789/p1700000000123456"],
-        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 if __name__ == "__main__":

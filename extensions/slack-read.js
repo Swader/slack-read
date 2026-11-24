@@ -1,7 +1,6 @@
 /**
- * Pi / Testy extension: detect Slack URLs in submitted user prompts and inject
- * a concise hidden instruction reminding the agent to read them via `slack-read`
- * instead of opening Slack in a browser.
+ * Pi / Testy extension: add Slack read instructions to the model request
+ * without changing the saved prompt or starting a separate turn.
  */
 
 const SLACK_URL_RE =
@@ -40,21 +39,26 @@ export function buildHint(urls) {
 }
 
 export default function slackReadPromptExtension(pi) {
-	pi.on("before_agent_start", async (event) => {
-		if (!event || event.messageType !== "user") {
-			return;
+	pi.on("context_with_system", (event) => {
+		// Queued input is already in the transcript here. Keep hints through tools
+		// and retries, but stop at a prior reply (or failed reply before new input).
+		let messages;
+		let sawUser = false;
+		for (let i = event.messages.length - 1; i >= 0; i--) {
+			const message = event.messages[i];
+			if (message.role === "assistant" && message.stopReason !== "toolUse"
+				&& (sawUser || message.stopReason === "stop")) break;
+			// Testy can represent summaries and recovery guidance as labeled user messages.
+			if (message.role !== "user" || message.testyContextLabel) continue;
+			sawUser = true;
+			const content = typeof message.content === "string"
+				? [{ type: "text", text: message.content }]
+				: message.content;
+			const urls = extractSlackUrls(content.filter(block => block.type === "text").map(block => block.text).join("\n"));
+			if (urls.length === 0) continue;
+			messages ??= event.messages.slice();
+			messages[i] = { ...message, content: [...content, { type: "text", text: buildHint(urls) }] };
 		}
-		const urls = extractSlackUrls(event.prompt);
-		if (urls.length === 0) {
-			return;
-		}
-		return {
-			message: {
-				customType: "slack-read-hint",
-				content: buildHint(urls),
-				display: false,
-				details: { urls },
-			},
-		};
+		if (messages) return { messages };
 	});
 }
