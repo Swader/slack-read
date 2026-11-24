@@ -86,7 +86,7 @@ ln -sfn ~/.agents/skills/slack-read ~/.cursor/skills/slack-read
 
 ### Auto-trigger when a Slack URL is pasted
 
-- **Pi / Testy** (`~/.pi/agent/extensions/`):
+- **Pi 0.87+ / Testy** (`~/.pi/agent/extensions/`): The extension suggests `slack-read` for normal prompts, steering messages, and queued follow-ups. It does not change the saved prompt or fetch Slack until the agent runs the helper.
   ```bash
   mkdir -p ~/.pi/agent/extensions
   ln -sfn ~/.agents/skills/slack-read/extensions/slack-read.js ~/.pi/agent/extensions/slack-read.js
